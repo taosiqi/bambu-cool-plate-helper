@@ -1,0 +1,33 @@
+name: Verify macOS
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - main.swift
+      - verify-macos.sh
+      - .github/workflows/macos.yml
+  pull_request:
+    paths:
+      - main.swift
+      - verify-macos.sh
+      - .github/workflows/macos.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native compile and self-test (no package)
+        run: ./verify-macos.sh "${{ matrix.arch }}"

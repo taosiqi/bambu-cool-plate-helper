@@ -23,32 +23,6 @@ func write(_ obj: [String: Any], _ url: URL) throws {
     let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     try (data + Data([10])).write(to: url, options: .atomic)
 }
-// Keep the earliest available original for each preset, including backups from v1.0.1.
-func initialBackup(_ backups: URL) throws -> URL {
-    let initial = backups.appendingPathComponent("initial")
-    try fm.createDirectory(at: initial, withIntermediateDirectories: true)
-    let snapshots = try fm.contentsOfDirectory(at: backups, includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey])
-        .filter { url in
-            let parts = url.lastPathComponent.split(separator: "-", maxSplits: 1)
-            return parts.count == 2 && Int(parts[0]) != nil && UUID(uuidString: String(parts[1])) != nil
-        }
-        .sorted {
-            let left = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            let right = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            return left == right ? $0.lastPathComponent < $1.lastPathComponent : left < right
-        }
-    for snapshot in snapshots {
-        for name in try presetNames(in: snapshot) {
-            let source = snapshot.appendingPathComponent(name)
-            let target = initial.appendingPathComponent(name)
-            if fm.fileExists(atPath: source.path) && !fm.fileExists(atPath: target.path) {
-                _ = try read(source)
-                try fm.copyItem(at: source, to: target)
-            }
-        }
-    }
-    return initial
-}
 func temperatureValue(_ text: String) throws -> Int {
     guard let value = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)), (1...120).contains(value) else {
         throw Failure(message: "请输入 1–120 之间的整数温度（℃）。")
@@ -78,7 +52,12 @@ func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
     let backup = backups.appendingPathComponent("\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString)")
     try fm.createDirectory(at: backup, withIntermediateDirectories: true)
     for (url, _) in edits { try fm.copyItem(at: url, to: backup.appendingPathComponent(url.lastPathComponent)) }
-    _ = try initialBackup(backups)
+    let initial = backups.appendingPathComponent("initial")
+    try fm.createDirectory(at: initial, withIntermediateDirectories: true)
+    for (url, _) in edits {
+        let target = initial.appendingPathComponent(url.lastPathComponent)
+        if !fm.fileExists(atPath: target.path) { try fm.copyItem(at: url, to: target) }
+    }
     do {
         for (url, obj) in edits { try write(obj, url) }
     } catch {
@@ -92,7 +71,7 @@ func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
     return edits.count
 }
 func restore(root: URL, backups: URL) throws -> Int {
-    let backup = try initialBackup(backups)
+    let backup = backups.appendingPathComponent("initial")
     var edits: [(URL, [String: Any], Data)] = []
     for name in try presetNames(in: backup) {
         let original = try read(backup.appendingPathComponent(name))
@@ -135,6 +114,10 @@ func selfTest() throws {
     let a = root.appendingPathComponent(names[1])
     try write(["name": String(names[0].dropLast(5)), keys[0]: ["60"], keys[1]: ["60"], "other": "keep"], p)
     try write(["name": String(names[1].dropLast(5)), "inherits": "base"], a)
+    let historical = backup.appendingPathComponent("1000000000-00000000-0000-0000-0000-000000000001")
+    try fm.createDirectory(at: historical, withIntermediateDirectories: true)
+    try write(["name": String(names[0].dropLast(5)), keys[0]: ["99"]], historical.appendingPathComponent(names[0]))
+    do { _ = try restore(root: root, backups: backup); assertionFailure("History must not be imported") } catch { }
     let changed = try apply(root: root, backups: backup)
     assert(changed == 2)
     let aAfter = try read(a)
@@ -154,8 +137,7 @@ func selfTest() throws {
     assert(custom[keys[0]] as? [String] == ["45"] && custom[keys[1]] as? [String] == ["45"])
     let repeatCustom = try apply(root: root, backups: backup, temperature: 45)
     assert(repeatCustom == 0)
-    // Migrate old snapshots and preserve the very first backup despite newer temperatures.
-    try fm.removeItem(at: backup.appendingPathComponent("initial"))
+    // Repeated edits preserve the first baseline, without scanning historical snapshots.
     _ = try restore(root: root, backups: backup)
     _ = try restore(root: root, backups: backup)
     let earliestP = try read(p), earliestA = try read(a)
@@ -192,7 +174,7 @@ func selfTest() throws {
     do { _ = try apply(root: root, backups: backup); assertionFailure("Malformed JSON accepted") } catch { }
     let afterInvalidJSON = try read(p)
     assert(afterInvalidJSON[keys[0]] as? [String] == ["60"])
-    print("PASS: all models, new/future presets, base preset, exclude PETG HF, custom temperature, range/input validation, idempotence, original backup migration, default restore, inheritance, unrelated edits, malformed JSON, process identity")
+    print("PASS: all models, new/future presets, base preset, exclude PETG HF, custom temperature, range/input validation, idempotence, immutable original backup, default restore, inheritance, unrelated edits, malformed JSON, process identity")
 }
 
 if CommandLine.arguments.contains("--self-test") {

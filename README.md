@@ -16,7 +16,7 @@ macOS / Windows 小工具，一键修改本机官方 Bambu PETG Basic 在低温�
 
 | 平台 | 下载包 | 要求 |
 | --- | --- | --- |
-| macOS | `BambuCoolPlateHelper-v1.3.0-arm64.zip` | Apple Silicon，macOS 13+ |
+| macOS | 待打包：arm64 / x86_64 两种架构 | Apple Silicon / Intel，macOS 13+ |
 | Windows | `BambuCoolPlateHelper-v1.3.0-windows-x64.zip` | Windows 10/11 x64，.NET Framework 4.8 |
 
 1. 保存项目并退出 Bambu Studio（Mac 使用 `⌘Q`）。
@@ -42,7 +42,7 @@ Windows 版不需要安装 Python 或独立 .NET SDK。两端都有 GitHub 仓�
 
 原来没有显式设置的字段会删除并恢复继承状态，因此继承后的实际温度取决于当前上级预设。恢复会覆盖后来手动设置或官方更新的这两个字段。
 
-兼容旧版历史备份；最初记录保存在 `Backups/initial/`，后续改成 45℃、50℃等都不会替换最初记录。每次实际修改前仍保留完整文件快照，重复应用相同数值不创建新快照。
+不扫描或导入旧版历史快照；首次修改时直接将原文件保存到 `Backups/initial/`，后续改成 45℃、50℃等都不会替换最初记录。每次实际修改前仍保留完整文件快照，重复应用相同数值不创建新快照。
 
 备份目录：
 
@@ -51,10 +51,12 @@ Windows 版不需要安装 Python 或独立 .NET SDK。两端都有 GitHub 仓�
 
 ## 构建与验证
 
-Mac 需要 Xcode Command Line Tools：
+Mac 的 **Verify macOS** CI 使用 `macos-15`（Apple Silicon）和 `macos-15-intel`（Intel）分别原生编译并运行自测，核对二进制架构；只验证，不生成应用包或发布。
+
+本地仅编译与自测（需要 Xcode Command Line Tools）：
 
 ```sh
-./build.sh
+./verify-macos.sh
 ```
 
 Windows 使用 PowerShell 和系统 .NET Framework 4.x 编译器：
@@ -63,7 +65,7 @@ Windows 使用 PowerShell 和系统 .NET Framework 4.x 编译器：
 ./windows/build.ps1
 ```
 
-产物位于 `dist/`。GitHub Actions 的 **Verify Windows** 工作流仅编译测试程序、执行临时目录自测并输出窗口预览，不生成下载包。Windows 本机可用 `./windows/build.ps1 -TestOnly` 运行同样的验证。自测不会修改真实 Studio 配置，覆盖全部机型及未来预设发现、排除 PETG HF、自定义温度、输入范围、重复应用、首次备份迁移、默认恢复、继承、无关字段保留、异常 JSON 和 Studio 进程识别。
+产物位于 `dist/`。GitHub Actions 的 **Verify Windows** 工作流仅编译测试程序、执行临时目录自测并输出窗口预览，不生成下载包。Windows 本机可用 `./windows/build.ps1 -TestOnly` 运行同样的验证。自测不会修改真实 Studio 配置，覆盖全部机型及未来预设发现、排除 PETG HF、自定义温度、输入范围、重复应用、首次备份保留、忽略旧版快照、默认恢复、继承、无关字段保留、异常 JSON 和 Studio 进程识别。
 
 图标源码为 `assets/generate-icon.swift`。在 Mac 上重新生成：
 

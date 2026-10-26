@@ -49,24 +49,6 @@ static class Program
         } finally { if (File.Exists(temp)) File.Delete(temp); }
     }
     static void Write(string path, Dictionary<string, object> obj) { Atomic(path, Utf8.GetBytes(Json.Serialize(obj) + "\n")); }
-    static bool Snapshot(string path)
-    {
-        string name = Path.GetFileName(path);
-        int split = name.IndexOf('-'); long seconds; Guid id;
-        return split > 0 && long.TryParse(name.Substring(0, split), out seconds) && Guid.TryParse(name.Substring(split + 1), out id);
-    }
-    static string Initial(string backups)
-    {
-        string initial = Path.Combine(backups, "initial");
-        Directory.CreateDirectory(initial);
-        foreach (string snapshot in Directory.GetDirectories(backups).Where(Snapshot).OrderBy(Directory.GetCreationTimeUtc).ThenBy(x => x, StringComparer.Ordinal)) {
-            foreach (string name in PresetNames(snapshot)) {
-                string source = Path.Combine(snapshot, name), target = Path.Combine(initial, name);
-                if (File.Exists(source) && !File.Exists(target)) { Read(source); File.Copy(source, target); }
-            }
-        }
-        return initial;
-    }
     static void Commit(Dictionary<string, Dictionary<string, object>> edits)
     {
         var originals = edits.Keys.ToDictionary(x => x, File.ReadAllBytes);
@@ -101,13 +83,18 @@ static class Program
         string backup = Path.Combine(backups, stamp);
         Directory.CreateDirectory(backup);
         foreach (string path in edits.Keys) File.Copy(path, Path.Combine(backup, Path.GetFileName(path)));
-        Initial(backups);
+        string initial = Path.Combine(backups, "initial");
+        Directory.CreateDirectory(initial);
+        foreach (string path in edits.Keys) {
+            string target = Path.Combine(initial, Path.GetFileName(path));
+            if (!File.Exists(target)) File.Copy(path, target);
+        }
         Commit(edits);
         return edits.Count;
     }
     static int Restore(string root, string backups)
     {
-        string backup = Initial(backups);
+        string backup = Path.Combine(backups, "initial");
         var edits = new Dictionary<string, Dictionary<string, object>>();
         foreach (string name in PresetNames(backup)) {
             string source = Path.Combine(backup, name), path = Path.Combine(root, name);
@@ -144,6 +131,11 @@ static class Program
             string p = Path.Combine(root, Names[0]), a = Path.Combine(root, Names[1]);
             Write(p, new Dictionary<string, object> { { "name", Path.GetFileNameWithoutExtension(Names[0]) }, { Keys[0], new[] { "60" } }, { Keys[1], new[] { "60" } }, { "other", "keep" } });
             Write(a, new Dictionary<string, object> { { "name", Path.GetFileNameWithoutExtension(Names[1]) }, { "inherits", "base" } });
+            string historical = Path.Combine(backups, "1000000000-00000000-0000-0000-0000-000000000001");
+            Directory.CreateDirectory(historical);
+            Write(Path.Combine(historical, Names[0]), new Dictionary<string, object> { { "name", Path.GetFileNameWithoutExtension(Names[0]) }, { Keys[0], new[] { "99" } } });
+            bool historyRejected = false; try { Restore(root, backups); } catch { historyRejected = true; }
+            Require(historyRejected, "old history must not be imported");
             Require(Apply(root, backups) == 2, "apply");
             Require(Equal(Get(Read(a), Keys[0]), new[] { "40" }), "inherited override");
             Require(Apply(root, backups) == 0, "idempotence");
@@ -154,9 +146,8 @@ static class Program
             Apply(root, backups, 45);
             Require(Equal(Get(Read(p), Keys[0]), new[] { "45" }) && Equal(Get(Read(p), Keys[1]), new[] { "45" }), "custom temperature");
             Require(Apply(root, backups, 45) == 0, "custom temperature idempotence");
-            Directory.Delete(Path.Combine(backups, "initial"), true);
             Restore(root, backups); Restore(root, backups);
-            Require(Equal(Get(Read(p), Keys[0]), new[] { "60" }) && !Read(a).ContainsKey(Keys[0]), "immutable original backup migration");
+            Require(Equal(Get(Read(p), Keys[0]), new[] { "60" }) && !Read(a).ContainsKey(Keys[0]), "immutable original backup");
             bool rejected;
             foreach (int invalid in new[] { 0, -1, 121 }) {
                 rejected = false; try { Apply(root, backups, invalid); } catch { rejected = true; }
@@ -175,7 +166,7 @@ static class Program
             File.WriteAllText(a, "invalid json");
             rejected = false; try { Apply(root, backups); } catch { rejected = true; }
             Require(rejected && Equal(Get(Read(p), Keys[0]), new[] { "60" }), "invalid JSON causes no partial write");
-            Console.WriteLine("PASS: all models, future/base presets, exclude PETG HF, custom temperature, input range, inheritance, idempotence, default restore, migration, malformed JSON, process identity");
+            Console.WriteLine("PASS: all models, future/base presets, exclude PETG HF, custom temperature, input range, inheritance, idempotence, default restore, ignored history, malformed JSON, process identity");
         } finally { Directory.Delete(temp, true); }
     }
     static Form CreateForm()
