@@ -1,0 +1,19 @@
+name: Build Windows
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test Windows application
+        shell: pwsh
+        run: ./windows/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-v1.2.0
+          path: |
+            dist/BambuCoolPlateHelper-v1.2.0-windows-x64.zip
+            windows-preview.png

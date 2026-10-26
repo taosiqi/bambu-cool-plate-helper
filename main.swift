@@ -202,14 +202,22 @@ func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> N
     a.informativeText = message
     for button in buttons { a.addButton(withTitle: button) }
     if title == "PETG 冷打板 · 40℃" {
-        let link = NSTextField(labelWithAttributedString: NSAttributedString(
-            string: "支持作者 · 去 MakerWorld 主页帮忙助力 ↗",
-            attributes: [.link: URL(string: "https://makerworld.com.cn/@siqijson?appSharePlatform=copy")!,
-                         .font: NSFont.systemFont(ofSize: 13)]))
-        link.isSelectable = true
-        link.allowsEditingTextAttributes = true
-        link.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
-        a.accessoryView = link
+        let links = NSStackView()
+        links.orientation = .vertical
+        links.alignment = .leading
+        links.spacing = 8
+        for (title, address) in [
+            ("支持作者 · 去 MakerWorld 主页帮忙助力 ↗", "https://makerworld.com.cn/@siqijson?appSharePlatform=copy"),
+            ("GitHub · 源码与新版下载 ↗", "https://github.com/taosiqi/bambu-cool-plate-helper")
+        ] {
+            let link = NSTextField(labelWithAttributedString: NSAttributedString(
+                string: title, attributes: [.link: URL(string: address)!, .font: NSFont.systemFont(ofSize: 13)]))
+            link.isSelectable = true
+            link.allowsEditingTextAttributes = true
+            links.addArrangedSubview(link)
+        }
+        links.frame = NSRect(x: 0, y: 0, width: 380, height: 52)
+        a.accessoryView = links
     }
     return a.runModal()
 }
