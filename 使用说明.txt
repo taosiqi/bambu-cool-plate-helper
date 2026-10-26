@@ -1,0 +1,17 @@
+Bambu 冷打板助手
+
+1. 保存项目，按 ⌘Q 退出 Bambu Studio。
+2. 双击 Bambu冷打板助手.app，点击“一键设为 40℃”。
+3. 重新打开 Studio，使用官方 Bambu PETG Basic 和低温增粘板 SuperTack，检查温度并重新切片。
+
+范围：本机 BambuStudio/system/BBL/filament 下 P2S、A1 mini 的 PETG Basic 官方预设，覆盖已有 0.2/0.4/0.6/0.8 喷嘴配置。不会修改 PETG HF、其他板型、用户自定义预设或项目文件。
+
+官方配置更新后可再次应用。已经切片的文件不会随之改变；旧 3MF 项目的独立覆盖可能继续生效。
+
+恢复上次修改：只恢复本工具修改的两个温度字段，原来继承的字段会删除并重新继承；保留其他设置。如果温度之后又被改过，则停止恢复。
+
+备份位置：~/Library/Application Support/BambuCoolPlateHelper/Backups
+每次实际修改前保留完整原文件，恢复按钮针对最近一次实际修改。
+
+这是本机编译的 Apple Silicon 应用，不需要 Python 或额外依赖，未经过 Apple 公证。
+源码：main.swift；验证：应用内部可执行文件加 --self-test，在临时目录运行，不修改真实配置。
