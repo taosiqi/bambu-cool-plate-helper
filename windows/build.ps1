@@ -18,4 +18,4 @@ if ($LASTEXITCODE -ne 0) { throw 'App compilation failed' }
 $p = Start-Process -FilePath './dist/windows/BambuCoolPlateHelper.exe' -ArgumentList '--render-preview' -PassThru -Wait
 if ($p.ExitCode -ne 0) { throw 'UI preview failed' }
 Copy-Item README.md dist/windows/README.md
-Compress-Archive -Path dist/windows/* -DestinationPath dist/BambuCoolPlateHelper-v1.0.0-windows-x64.zip -Force
+Compress-Archive -Path dist/windows/* -DestinationPath dist/BambuCoolPlateHelper-v1.1.0-windows-x64.zip -Force

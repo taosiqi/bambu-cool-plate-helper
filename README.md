@@ -12,9 +12,9 @@
 
 | 设备 | 下载包 | 系统要求 |
 | --- | --- | --- |
-| Mac · Apple Silicon（M 系列） | `BambuCoolPlateHelper-v1.0.0-arm64.zip` | macOS 13+ |
-| Mac · Intel | `BambuCoolPlateHelper-v1.0.0-x86_64.zip` | macOS 13+ |
-| Windows · x64 | `BambuCoolPlateHelper-v1.0.0-windows-x64.zip` | Windows 10/11，.NET Framework 4.8 |
+| Mac · Apple Silicon（M 系列） | `BambuCoolPlateHelper-v1.1.0-arm64.zip` | macOS 13+ |
+| Mac · Intel | `BambuCoolPlateHelper-v1.1.0-x86_64.zip` | macOS 13+ |
+| Windows · x64 | `BambuCoolPlateHelper-v1.1.0-windows-x64.zip` | Windows 10/11，.NET Framework 4.8 |
 
 无需安装 Python。Mac 应用未经过 Apple 公证，Windows 应用未做代码签名。
 
