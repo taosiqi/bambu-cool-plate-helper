@@ -1,12 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-APP='dist/Bambu冷打板助手.app'
+arch="${1:-$(uname -m)}"
+./verify-macos.sh "$arch"
+APP="dist/$arch/Bambu冷打板助手.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "dist/tests/BambuCoolPlateHelper-$arch" "$APP/Contents/MacOS/BambuCoolPlateHelper"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-swiftc main.swift -target arm64-apple-macos13.0 -framework AppKit -o "$APP/Contents/MacOS/BambuCoolPlateHelper"
 cp Info.plist "$APP/Contents/Info.plist"
-"$APP/Contents/MacOS/BambuCoolPlateHelper" --self-test
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
-ditto -c -k --sequesterRsrc --keepParent "$APP" dist/BambuCoolPlateHelper-v1.3.0-arm64.zip
+ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/BambuCoolPlateHelper-v1.0.0-$arch.zip"

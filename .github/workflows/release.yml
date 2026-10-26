@@ -1,0 +1,62 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  macos:
+    name: Package macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build.sh "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/BambuCoolPlateHelper-v1.0.0-${{ matrix.arch }}.zip
+          if-no-files-found: error
+  windows:
+    name: Package Windows (x64)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: ./windows/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/BambuCoolPlateHelper-v1.0.0-windows-x64.zip
+          if-no-files-found: error
+  publish:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title 'Bambu 冷打板助手 1.0' --notes-file RELEASE_NOTES.md --latest
+            gh release upload "$RELEASE_TAG" packages/*.zip --clobber
+          else
+            gh release create "$RELEASE_TAG" packages/*.zip --verify-tag --title 'Bambu 冷打板助手 1.0' --notes-file RELEASE_NOTES.md --latest
+          fi
