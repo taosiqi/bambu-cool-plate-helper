@@ -2,10 +2,18 @@ import AppKit
 
 let fm = FileManager.default
 let keys = ["supertack_plate_temp", "supertack_plate_temp_initial_layer"]
+func materialName(_ filename: String) -> String? {
+    guard filename.hasSuffix(".json"), let separator = filename.range(of: " @") else { return nil }
+    let material = String(filename[..<separator.lowerBound])
+    return material == "Bambu PETG" || material.hasPrefix("Bambu PETG ") || material.hasPrefix("Bambu PETG-") ? material : nil
+}
+func requireSelection(_ materials: Set<String>) throws {
+    guard !materials.isEmpty else { throw Failure(message: "请至少勾选一种耗材。") }
+}
 func presetNames(in directory: URL) throws -> [String] {
     guard fm.fileExists(atPath: directory.path) else { return [] }
     return try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey])
-        .filter { $0.lastPathComponent.hasPrefix("Bambu PETG Basic @") && $0.pathExtension == "json"
+        .filter { materialName($0.lastPathComponent) != nil
             && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
         .map { $0.lastPathComponent }.sorted()
 }
@@ -29,9 +37,10 @@ func temperatureValue(_ text: String) throws -> Int {
     }
     return value
 }
-func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
+func apply(root: URL, backups: URL, temperature: Int = 40, materials: Set<String> = ["Bambu PETG Basic"]) throws -> Int {
+    try requireSelection(materials)
     let wanted = [String(try temperatureValue(String(temperature)))]
-    let names = try presetNames(in: root)
+    let names = try presetNames(in: root).filter { materials.contains(materialName($0)!) }
     // Validate every target before writing any file.
     var edits: [(URL, [String: Any])] = []
     for name in names {
@@ -46,7 +55,7 @@ func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
         edits.append((url, obj))
     }
     guard names.contains(where: { fm.fileExists(atPath: root.appendingPathComponent($0).path) }) else {
-        throw Failure(message: "没有找到官方 PETG Basic 配置。请先在 Bambu Studio 完成官方配置更新。")
+        throw Failure(message: "没有找到所选耗材的官方配置。请先在 Bambu Studio 完成官方配置更新。")
     }
     if edits.isEmpty { return 0 }
     let backup = backups.appendingPathComponent("\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString)")
@@ -70,10 +79,11 @@ func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
     }
     return edits.count
 }
-func restore(root: URL, backups: URL) throws -> Int {
+func restore(root: URL, backups: URL, materials: Set<String> = ["Bambu PETG Basic"]) throws -> Int {
+    try requireSelection(materials)
     let backup = backups.appendingPathComponent("initial")
     var edits: [(URL, [String: Any], Data)] = []
-    for name in try presetNames(in: backup) {
+    for name in try presetNames(in: backup).filter({ materials.contains(materialName($0)!) }) {
         let original = try read(backup.appendingPathComponent(name))
         let url = root.appendingPathComponent(name)
         var current = try read(url)
@@ -83,7 +93,7 @@ func restore(root: URL, backups: URL) throws -> Int {
         }
         edits.append((url, current, try Data(contentsOf: url)))
     }
-    guard !edits.isEmpty else { throw Failure(message: "备份中没有目标配置。") }
+    guard !edits.isEmpty else { throw Failure(message: "所选耗材还没有默认备份。") }
     do {
         for (url, obj, _) in edits { try write(obj, url) }
     } catch {
@@ -170,11 +180,27 @@ func selfTest() throws {
         let obj = try read(root.appendingPathComponent(name))
         assert(obj[keys[0]] as? [String] == ["70"])
     }
+    let discovered = Set(try presetNames(in: root).compactMap(materialName))
+    assert(discovered.contains("Bambu PETG Basic") && discovered.contains("Bambu PETG HF"))
+    assert(materialName("Bambu PETG-CF @base.json") == "Bambu PETG-CF")
+    assert(materialName("Bambu PLA Basic @base.json") == nil)
+    let hfOnly = try apply(root: root, backups: backup, temperature: 42, materials: ["Bambu PETG HF"])
+    assert(hfOnly == 1)
+    let basicAfterHF = try read(p), hfAfter = try read(unrelated)
+    assert(basicAfterHF[keys[0]] as? [String] == ["60"] && hfAfter[keys[0]] as? [String] == ["42"])
+    let both = try apply(root: root, backups: backup, temperature: 45, materials: ["Bambu PETG Basic", "Bambu PETG HF"])
+    assert(both == 7)
+    _ = try restore(root: root, backups: backup, materials: ["Bambu PETG HF"])
+    let basicAfterRestoreHF = try read(p), restoredHF = try read(unrelated)
+    assert(basicAfterRestoreHF[keys[0]] as? [String] == ["45"] && restoredHF[keys[0]] as? [String] == ["80"])
+    _ = try restore(root: root, backups: backup)
+    do { _ = try apply(root: root, backups: backup, materials: []); assertionFailure("Empty selection accepted") } catch { }
+    do { _ = try restore(root: root, backups: backup, materials: []); assertionFailure("Empty restore selection accepted") } catch { }
     try Data("invalid JSON".utf8).write(to: a)
     do { _ = try apply(root: root, backups: backup); assertionFailure("Malformed JSON accepted") } catch { }
     let afterInvalidJSON = try read(p)
     assert(afterInvalidJSON[keys[0]] as? [String] == ["60"])
-    print("PASS: all models, new/future presets, base preset, exclude PETG HF, custom temperature, range/input validation, idempotence, immutable original backup, default restore, inheritance, unrelated edits, malformed JSON, process identity")
+    print("PASS: all models, new/future presets, base preset, material discovery, Basic/HF multi-selection, isolated restore, empty selection, custom temperature, range/input validation, idempotence, immutable original backup, default restore, inheritance, unrelated edits, malformed JSON, process identity")
 }
 
 if CommandLine.arguments.contains("--self-test") {
@@ -212,6 +238,16 @@ let support = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/App
 let root = support.appendingPathComponent("BambuStudio/system/BBL/filament")
 let backups = support.appendingPathComponent("BambuCoolPlateHelper/Backups")
 let temperatureInput = NSTextField(string: "40")
+var materialButtons: [NSButton] = []
+var materialLoadError: String?
+do {
+    let materials = Set(try presetNames(in: root).compactMap(materialName)).sorted()
+    materialButtons = materials.map {
+        let checkbox = NSButton(checkboxWithTitle: $0, target: nil, action: nil)
+        checkbox.state = $0 == "Bambu PETG Basic" ? .on : .off
+        return checkbox
+    }
+} catch { materialLoadError = error.localizedDescription }
 func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> NSApplication.ModalResponse {
     let a = NSAlert()
     a.messageText = title
@@ -222,6 +258,21 @@ func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> N
         links.orientation = .vertical
         links.alignment = .leading
         links.spacing = 12
+        links.addArrangedSubview(NSTextField(labelWithString: "勾选要修改或恢复的耗材"))
+        let choices = NSStackView(views: materialButtons)
+        choices.orientation = .vertical
+        choices.alignment = .leading
+        choices.spacing = 4
+        let listHeight = CGFloat(max(1, materialButtons.count) * 26)
+        choices.frame = NSRect(x: 0, y: 0, width: 400, height: listHeight)
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: min(listHeight, 156)))
+        scroll.documentView = choices
+        scroll.hasVerticalScroller = materialButtons.count > 6
+        scroll.drawsBackground = false
+        scroll.widthAnchor.constraint(equalToConstant: 400).isActive = true
+        scroll.heightAnchor.constraint(equalToConstant: min(listHeight, 156)).isActive = true
+        links.addArrangedSubview(scroll)
+        if materialButtons.isEmpty { links.addArrangedSubview(NSTextField(labelWithString: "未发现官方 PETG 预设，请先在 Studio 更新配置。")) }
         temperatureInput.widthAnchor.constraint(equalToConstant: 90).isActive = true
         temperatureInput.setAccessibilityLabel("热床温度，摄氏度")
         let row = NSStackView(views: [NSTextField(labelWithString: "热床温度"), temperatureInput, NSTextField(labelWithString: "℃（1–120，整数）")])
@@ -235,13 +286,14 @@ func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> N
             let link = LinkButton(title: title, url: address)
             links.addArrangedSubview(link)
         }
-        links.frame = NSRect(x: 0, y: 0, width: 400, height: 98)
+        links.frame = NSRect(x: 0, y: 0, width: 400, height: 142 + min(listHeight, 156))
         a.accessoryView = links
     }
     return a.runModal()
 }
+if let materialLoadError { _ = alert("无法读取耗材列表", materialLoadError); exit(1) }
 while true {
-    let answer = alert("PETG 冷打板助手", "一键修改官方 Bambu PETG Basic 预设，所有引用它的颜色共用。\n\n机器与喷嘴：本机官方 PETG Basic 的全部预设\n打印板：低温增粘板 SuperTack\n首层和其他层使用相同温度，默认填入 40℃。\n\n请先保存项目并退出 Bambu Studio。修改前自动备份；官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复默认：还原各预设首次备份的温度字段（包括继承状态），其他参数保留。", buttons: ["应用温度", "恢复默认", "退出"])
+    let answer = alert("PETG 冷打板助手", "所选耗材的全部机型、喷嘴和颜色共用温度。\n低温增粘板 SuperTack · 首层和其他层同步修改。\n\n请先保存项目并退出 Bambu Studio，只勾选打印板支持的耗材。修改前自动备份，修改后重新切片。\n\n恢复默认只还原勾选耗材首次备份的温度设置。", buttons: ["应用温度", "恢复默认", "退出"])
     guard answer == .alertFirstButtonReturn || answer == .alertSecondButtonReturn else { break }
     let running = NSWorkspace.shared.runningApplications.contains {
         isStudio(bundleID: $0.bundleIdentifier, executableName: $0.executableURL?.lastPathComponent)
@@ -251,8 +303,9 @@ while true {
         continue
     }
     do {
+        let selected = Set(materialButtons.filter { $0.state == .on }.map { $0.title })
         let applying = answer == .alertFirstButtonReturn
-        let count = try applying ? apply(root: root, backups: backups, temperature: temperatureValue(temperatureInput.stringValue)) : restore(root: root, backups: backups)
+        let count = try applying ? apply(root: root, backups: backups, temperature: temperatureValue(temperatureInput.stringValue), materials: selected) : restore(root: root, backups: backups, materials: selected)
         _ = alert(count == 0 ? "已经是指定温度" : "\(applying ? "修改" : "恢复")完成", "\(count == 0 ? "无需重复修改。" : "已处理 \(count) 份官方耗材配置。")\n\n重新打开 Bambu Studio，检查低温增粘板的首层和其他层温度，然后重新切片。\n\n备份目录：\(backups.path)")
         break
     } catch { _ = alert("未完成", error.localizedDescription) }

@@ -18,11 +18,24 @@ static class Program
     const string Repo = "https://github.com/taosiqi/bambu-cool-plate-helper";
     const string Maker = "https://makerworld.com.cn/@siqijson?appSharePlatform=copy";
     static readonly string[] Keys = { "supertack_plate_temp", "supertack_plate_temp_initial_layer" };
+    static string MaterialName(string filename)
+    {
+        int separator = filename.IndexOf(" @", StringComparison.Ordinal);
+        if (!filename.EndsWith(".json", StringComparison.Ordinal) || separator < 0) return null;
+        string material = filename.Substring(0, separator);
+        return material == "Bambu PETG" || material.StartsWith("Bambu PETG ", StringComparison.Ordinal) || material.StartsWith("Bambu PETG-", StringComparison.Ordinal) ? material : null;
+    }
+    static string[] Selection(string[] materials)
+    {
+        if (materials == null) return new[] { "Bambu PETG Basic" };
+        if (materials.Length == 0) throw new Exception("请至少勾选一种耗材。");
+        return materials;
+    }
     static string[] PresetNames(string directory)
     {
         if (!Directory.Exists(directory)) return new string[0];
         return Directory.GetFiles(directory, "*.json")
-            .Select(Path.GetFileName).Where(name => name.StartsWith("Bambu PETG Basic @", StringComparison.Ordinal))
+            .Select(Path.GetFileName).Where(name => MaterialName(name) != null)
             .OrderBy(name => name, StringComparer.Ordinal).ToArray();
     }
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 16 * 1024 * 1024 };
@@ -61,13 +74,14 @@ static class Program
             throw new Exception(error.Message + "\n" + (failures.Count == 0 ? "本次写入已回滚。" : "部分回滚失败，请检查备份：" + string.Join("、", failures)));
         }
     }
-    static int Apply(string root, string backups, int temperature = 40)
+    static int Apply(string root, string backups, int temperature = 40, string[] materials = null)
     {
+        materials = Selection(materials);
         if (temperature < 1 || temperature > 120) throw new Exception("请输入 1–120 之间的整数温度（℃）。");
         var wanted = new[] { temperature.ToString(System.Globalization.CultureInfo.InvariantCulture) };
         var edits = new Dictionary<string, Dictionary<string, object>>();
         int found = 0;
-        foreach (string name in PresetNames(root)) {
+        foreach (string name in PresetNames(root).Where(name => materials.Contains(MaterialName(name)))) {
             string path = Path.Combine(root, name);
             if (!File.Exists(path)) continue;
             found++;
@@ -77,7 +91,7 @@ static class Program
             foreach (string key in Keys) obj[key] = wanted;
             edits.Add(path, obj);
         }
-        if (found == 0) throw new Exception("没有找到官方 PETG Basic 配置。请先在 Bambu Studio 完成官方配置更新。\n" + root);
+        if (found == 0) throw new Exception("没有找到所选耗材的官方配置。请先在 Bambu Studio 完成官方配置更新。\n" + root);
         if (edits.Count == 0) return 0;
         string stamp = ((long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds).ToString() + "-" + Guid.NewGuid();
         string backup = Path.Combine(backups, stamp);
@@ -92,11 +106,12 @@ static class Program
         Commit(edits);
         return edits.Count;
     }
-    static int Restore(string root, string backups)
+    static int Restore(string root, string backups, string[] materials = null)
     {
+        materials = Selection(materials);
         string backup = Path.Combine(backups, "initial");
         var edits = new Dictionary<string, Dictionary<string, object>>();
-        foreach (string name in PresetNames(backup)) {
+        foreach (string name in PresetNames(backup).Where(name => materials.Contains(MaterialName(name)))) {
             string source = Path.Combine(backup, name), path = Path.Combine(root, name);
             if (!File.Exists(source)) continue;
             var original = Read(source); var current = Read(path);
@@ -107,7 +122,7 @@ static class Program
             }
             edits.Add(path, current);
         }
-        if (edits.Count == 0) throw new Exception("备份中没有目标配置。");
+        if (edits.Count == 0) throw new Exception("所选耗材还没有默认备份。");
         Commit(edits);
         return edits.Count;
     }
@@ -163,22 +178,44 @@ static class Program
             foreach (string name in extra) Require(Equal(Get(Read(Path.Combine(root, name)), Keys[0]), new[] { "50" }), "additional model modified");
             Restore(root, backups);
             foreach (string name in extra) Require(Equal(Get(Read(Path.Combine(root, name)), Keys[0]), new[] { "70" }), "incremental original backup");
+            Require(PresetNames(root).Select(MaterialName).Distinct().Count() == 2, "discover Basic and HF");
+            Require(MaterialName("Bambu PETG-CF @base.json") == "Bambu PETG-CF" && MaterialName("Bambu PLA Basic @base.json") == null, "material family boundary");
+            Require(Apply(root, backups, 42, new[] { "Bambu PETG HF" }) == 1, "HF only");
+            Require(Equal(Get(Read(p), Keys[0]), new[] { "60" }) && Equal(Get(Read(hf), Keys[0]), new[] { "42" }), "HF selection isolates Basic");
+            Require(Apply(root, backups, 45, new[] { "Bambu PETG Basic", "Bambu PETG HF" }) == 7, "multi selection");
+            Restore(root, backups, new[] { "Bambu PETG HF" });
+            Require(Equal(Get(Read(p), Keys[0]), new[] { "45" }) && Equal(Get(Read(hf), Keys[0]), new[] { "80" }), "restore only selected material");
+            Restore(root, backups);
+            rejected = false; try { Apply(root, backups, 40, new string[0]); } catch { rejected = true; }
+            Require(rejected, "empty apply selection");
+            rejected = false; try { Restore(root, backups, new string[0]); } catch { rejected = true; }
+            Require(rejected, "empty restore selection");
             File.WriteAllText(a, "invalid json");
             rejected = false; try { Apply(root, backups); } catch { rejected = true; }
             Require(rejected && Equal(Get(Read(p), Keys[0]), new[] { "60" }), "invalid JSON causes no partial write");
-            Console.WriteLine("PASS: all models, future/base presets, exclude PETG HF, custom temperature, input range, inheritance, idempotence, default restore, ignored history, malformed JSON, process identity");
+            Console.WriteLine("PASS: all models, future/base presets, discovery, Basic/HF multi-selection, isolated restore, empty selection, custom temperature, input range, inheritance, idempotence, default restore, ignored history, malformed JSON, process identity");
         } finally { Directory.Delete(temp, true); }
     }
-    static Form CreateForm()
+    static Form CreateForm(string[] previewMaterials = null)
     {
-        var form = new Form { Text = "Bambu 冷打板助手", ClientSize = new Size(620, 580), StartPosition = FormStartPosition.CenterScreen,
-            Font = new Font("Microsoft YaHei UI", 10F), AutoScaleMode = AutoScaleMode.Dpi, MinimumSize = new Size(600, 600), BackColor = Color.White };
+        var form = new Form { Text = "Bambu 冷打板助手", ClientSize = new Size(620, 650), StartPosition = FormStartPosition.CenterScreen,
+            Font = new Font("Microsoft YaHei UI", 10F), AutoScaleMode = AutoScaleMode.Dpi, MinimumSize = new Size(600, 670), BackColor = Color.White };
         form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(26) };
         form.Controls.Add(flow);
         flow.Controls.Add(new PictureBox { Image = form.Icon.ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(64, 64), Margin = new Padding(0, 0, 0, 12) });
         flow.Controls.Add(new Label { Text = "PETG 冷打板助手", AutoSize = true, Font = new Font(form.Font.FontFamily, 19F, FontStyle.Bold), Margin = new Padding(0, 0, 0, 14) });
-        flow.Controls.Add(new Label { Text = "全部机型 · 官方 PETG Basic\n低温增粘板 SuperTack · 首层和其他层使用相同温度\n自动扫描本机所有机型和喷嘴的官方 PETG Basic 预设。\n\n请先保存项目并退出 Bambu Studio。修改前自动备份，\n官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复默认会还原首次备份的温度字段（包括继承状态），\n覆盖后来设置的温度，保留其他参数。", AutoSize = true, MaximumSize = new Size(550, 0), Margin = new Padding(0, 0, 0, 18) });
+        flow.Controls.Add(new Label { Text = "所选耗材的全部机型、喷嘴和颜色共用温度。\n低温增粘板 SuperTack · 首层和其他层同步修改。\n\n请先保存项目并退出 Bambu Studio，只勾选打印板支持的耗材。\n修改前自动备份，修改后重新切片。\n恢复默认只还原勾选耗材首次备份的温度设置。", AutoSize = true, MaximumSize = new Size(550, 0), Margin = new Padding(0, 0, 0, 18) });
+        flow.Controls.Add(new Label { Text = "勾选要修改或恢复的耗材", AutoSize = true, Margin = new Padding(0, 0, 0, 6) });
+        var choices = new CheckedListBox { CheckOnClick = true, Width = 530, Height = 130, BorderStyle = BorderStyle.FixedSingle, IntegralHeight = false, AccessibleName = "耗材选择" };
+        try {
+            var materials = previewMaterials ?? PresetNames(Root).Select(MaterialName).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToArray();
+            foreach (string material in materials) choices.Items.Add(material, material == "Bambu PETG Basic");
+            if (materials.Length == 0) flow.Controls.Add(new Label { Text = "未发现官方 PETG 预设，请先在 Studio 更新配置。", AutoSize = true });
+        } catch (Exception error) {
+            flow.Controls.Add(new Label { Text = "无法读取耗材列表：" + error.Message, AutoSize = true, MaximumSize = new Size(550, 0) });
+        }
+        flow.Controls.Add(choices);
         var temperature = new NumericUpDown { Minimum = 1, Maximum = 120, Value = 40, DecimalPlaces = 0, Width = 90, AccessibleName = "热床温度，摄氏度" };
         var inputRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 16) };
         inputRow.Controls.Add(new Label { Text = "热床温度", AutoSize = true, Margin = new Padding(0, 4, 10, 0) });
@@ -193,7 +230,8 @@ static class Program
             button.Click += delegate {
                 try {
                     if (StudioRunning()) throw new Exception("请先保存项目并退出 Bambu Studio，然后再试。工具不会强制关闭 Studio。");
-                    int count = action == 0 ? Apply(Root, Backups, (int)temperature.Value) : Restore(Root, Backups);
+                    var selected = choices.CheckedItems.Cast<string>().ToArray();
+                    int count = action == 0 ? Apply(Root, Backups, (int)temperature.Value, selected) : Restore(Root, Backups, selected);
                     MessageBox.Show(form, (count == 0 ? "已经是指定温度，无需重复修改。" : "已处理 " + count + " 份官方耗材配置。") + "\n\n重新打开 Bambu Studio，检查温度并重新切片。\n备份：" + Backups, "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 } catch (Exception error) { MessageBox.Show(form, error.Message, "未完成", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             };
@@ -214,7 +252,7 @@ static class Program
         if (args.Contains("--self-test")) { try { SelfTest(); return 0; } catch (Exception error) { Console.Error.WriteLine(error); return 1; } }
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using (var form = CreateForm()) {
+        using (var form = CreateForm(args.Contains("--render-preview") ? new[] { "Bambu PETG Basic", "Bambu PETG HF", "Bambu PETG Matte", "Bambu PETG Translucent", "Bambu PETG-CF" } : null)) {
             if (args.Contains("--render-preview")) {
                 form.Show(); Application.DoEvents();
                 using (var image = new Bitmap(form.Width, form.Height)) {
