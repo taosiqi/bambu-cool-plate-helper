@@ -2,7 +2,6 @@ import AppKit
 
 let fm = FileManager.default
 let keys = ["supertack_plate_temp", "supertack_plate_temp_initial_layer"]
-let wanted = ["40"]
 let names = ["P2S", "A1M"].flatMap { model in
     ["0.2", "0.4", "0.6", "0.8"].map { "Bambu PETG Basic @BBL \(model) \($0) nozzle.json" }
 }
@@ -46,7 +45,14 @@ func initialBackup(_ backups: URL) throws -> URL {
     }
     return initial
 }
-func apply(root: URL, backups: URL) throws -> Int {
+func temperatureValue(_ text: String) throws -> Int {
+    guard let value = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)), (1...120).contains(value) else {
+        throw Failure(message: "请输入 1–120 之间的整数温度（℃）。")
+    }
+    return value
+}
+func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
+    let wanted = [String(try temperatureValue(String(temperature)))]
     // Validate every target before writing any file.
     var edits: [(URL, [String: Any])] = []
     for name in names {
@@ -68,9 +74,6 @@ func apply(root: URL, backups: URL) throws -> Int {
     try fm.createDirectory(at: backup, withIntermediateDirectories: true)
     for (url, _) in edits { try fm.copyItem(at: url, to: backup.appendingPathComponent(url.lastPathComponent)) }
     _ = try initialBackup(backups)
-    // Persist recovery pointer before changing files, including if an individual write fails.
-    try fm.createDirectory(at: backups, withIntermediateDirectories: true)
-    try Data(backup.lastPathComponent.utf8).write(to: backups.appendingPathComponent("latest"), options: .atomic)
     do {
         for (url, obj) in edits { try write(obj, url) }
     } catch {
@@ -83,17 +86,8 @@ func apply(root: URL, backups: URL) throws -> Int {
     }
     return edits.count
 }
-func restore(root: URL, backups: URL, initial: Bool = false) throws -> Int {
-    let pointer = backups.appendingPathComponent("latest")
-    let backup: URL
-    if initial {
-        backup = try initialBackup(backups)
-    } else {
-        guard fm.fileExists(atPath: pointer.path) else { throw Failure(message: "还没有可恢复的备份。") }
-        let folder = try String(contentsOf: pointer, encoding: .utf8)
-        guard !folder.contains("/"), !folder.contains(".."), !folder.isEmpty else { throw Failure(message: "备份记录无效。") }
-        backup = backups.appendingPathComponent(folder)
-    }
+func restore(root: URL, backups: URL) throws -> Int {
+    let backup = try initialBackup(backups)
     var edits: [(URL, [String: Any], Data)] = []
     for name in names where fm.fileExists(atPath: backup.appendingPathComponent(name).path) {
         let original = try read(backup.appendingPathComponent(name))
@@ -101,12 +95,6 @@ func restore(root: URL, backups: URL, initial: Bool = false) throws -> Int {
         var current = try read(url)
         guard current["name"] as? String == original["name"] as? String else { throw Failure(message: "配置身份已变化，停止恢复：\(name)") }
         for key in keys {
-            // Do not overwrite a later temperature edit or a vendor update.
-            let now = current[key] as? [String]
-            let old = original[key] as? [String]
-            guard initial || now == wanted || now == old else {
-                throw Failure(message: "\(name) 的温度已被其他操作更改，停止恢复以保留新设置。备份位于：\(backup.path)")
-            }
             current[key] = original[key]
         }
         edits.append((url, current, try Data(contentsOf: url)))
@@ -121,7 +109,6 @@ func restore(root: URL, backups: URL, initial: Bool = false) throws -> Int {
         }
         throw Failure(message: "恢复失败：\(error.localizedDescription)\n\(failed ? "部分回滚失败，请检查备份。" : "本次恢复已回滚。")")
     }
-    if !initial { try fm.removeItem(at: pointer) }
     return edits.count
 }
 
@@ -145,7 +132,7 @@ func selfTest() throws {
     let changed = try apply(root: root, backups: backup)
     assert(changed == 2)
     let aAfter = try read(a)
-    assert(aAfter[keys[0]] as? [String] == wanted)
+    assert(aAfter[keys[0]] as? [String] == ["40"])
     let again = try apply(root: root, backups: backup)
     assert(again == 0)
     var pAfter = try read(p)
@@ -156,33 +143,31 @@ func selfTest() throws {
     let oldP = try read(p), oldA = try read(a)
     assert(oldP[keys[0]] as? [String] == ["60"] && oldP["other"] as? String == "updated")
     assert(oldA[keys[0]] == nil && oldA[keys[1]] == nil)
-    _ = try apply(root: root, backups: backup)
-    var conflict = try read(a)
-    conflict[keys[0]] = ["55"]
-    try write(conflict, a)
-    do { _ = try restore(root: root, backups: backup); assertionFailure("Must reject conflicting temperature") }
-    catch { }
-    let unchangedP = try read(p)
-    assert(unchangedP[keys[0]] as? [String] == wanted)
-    // Rebuild the baseline from old snapshots, then ensure later snapshots never replace it.
+    _ = try apply(root: root, backups: backup, temperature: 45)
+    let custom = try read(p)
+    assert(custom[keys[0]] as? [String] == ["45"] && custom[keys[1]] as? [String] == ["45"])
+    let repeatCustom = try apply(root: root, backups: backup, temperature: 45)
+    assert(repeatCustom == 0)
+    // Migrate old snapshots and preserve the very first backup despite newer temperatures.
     try fm.removeItem(at: backup.appendingPathComponent("initial"))
-    _ = try restore(root: root, backups: backup, initial: true)
-    let firstP = try read(p), firstA = try read(a)
-    assert(firstP[keys[0]] as? [String] == ["60"] && firstP["other"] as? String == "updated")
-    assert(firstA[keys[0]] == nil)
-    var updated = firstP
-    updated[keys[0]] = ["65"]
-    updated[keys[1]] = ["65"]
-    try write(updated, p)
-    _ = try apply(root: root, backups: backup)
     _ = try restore(root: root, backups: backup)
-    let lastP = try read(p)
-    assert(lastP[keys[0]] as? [String] == ["65"])
-    _ = try restore(root: root, backups: backup, initial: true)
-    _ = try restore(root: root, backups: backup, initial: true)
-    let earliestP = try read(p)
-    assert(earliestP[keys[0]] as? [String] == ["60"])
-    print("PASS: initial backup migration, immutable baseline, latest versus initial, repeat restore; explicit/inherited values, idempotence, restore, unrelated edits, conflicting restore")
+    _ = try restore(root: root, backups: backup)
+    let earliestP = try read(p), earliestA = try read(a)
+    assert(earliestP[keys[0]] as? [String] == ["60"] && earliestP["other"] as? String == "updated")
+    assert(earliestA[keys[0]] == nil)
+    for invalid in ["", "abc", "40.5", "0", "121"] {
+        do { _ = try temperatureValue(invalid); assertionFailure("Invalid temperature accepted") } catch { }
+    }
+    let valid = try temperatureValue(" 45 ")
+    assert(valid == 45)
+    do { _ = try apply(root: root, backups: backup, temperature: 121); assertionFailure("Range check missing") } catch { }
+    let untouched = try read(p)
+    assert(untouched[keys[0]] as? [String] == ["60"])
+    try Data("invalid JSON".utf8).write(to: a)
+    do { _ = try apply(root: root, backups: backup); assertionFailure("Malformed JSON accepted") } catch { }
+    let afterInvalidJSON = try read(p)
+    assert(afterInvalidJSON[keys[0]] as? [String] == ["60"])
+    print("PASS: custom temperature, range/input validation, idempotence, original backup migration, default restore, inheritance, unrelated edits, malformed JSON, process identity")
 }
 
 if CommandLine.arguments.contains("--self-test") {
@@ -196,16 +181,23 @@ app.activate(ignoringOtherApps: true)
 let support = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
 let root = support.appendingPathComponent("BambuStudio/system/BBL/filament")
 let backups = support.appendingPathComponent("BambuCoolPlateHelper/Backups")
+let temperatureInput = NSTextField(string: "40")
 func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> NSApplication.ModalResponse {
     let a = NSAlert()
     a.messageText = title
     a.informativeText = message
     for button in buttons { a.addButton(withTitle: button) }
-    if title == "PETG 冷打板 · 40℃" {
+    if title == "PETG 冷打板助手" {
         let links = NSStackView()
         links.orientation = .vertical
         links.alignment = .leading
-        links.spacing = 8
+        links.spacing = 12
+        temperatureInput.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        temperatureInput.setAccessibilityLabel("热床温度，摄氏度")
+        let row = NSStackView(views: [NSTextField(labelWithString: "热床温度"), temperatureInput, NSTextField(labelWithString: "℃（1–120，整数）")])
+        row.orientation = .horizontal
+        row.spacing = 8
+        links.addArrangedSubview(row)
         for (title, address) in [
             ("支持作者 · 去 MakerWorld 主页帮忙助力 ↗", "https://makerworld.com.cn/@siqijson?appSharePlatform=copy"),
             ("GitHub · 源码与新版下载 ↗", "https://github.com/taosiqi/bambu-cool-plate-helper")
@@ -216,23 +208,25 @@ func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> N
             link.allowsEditingTextAttributes = true
             links.addArrangedSubview(link)
         }
-        links.frame = NSRect(x: 0, y: 0, width: 380, height: 52)
+        links.frame = NSRect(x: 0, y: 0, width: 400, height: 98)
         a.accessoryView = links
     }
     return a.runModal()
 }
-let answer = alert("PETG 冷打板 · 40℃", "一键修改官方 Bambu PETG Basic 预设，所有引用它的颜色共用。\n\n机器：P2S、A1 mini\n喷嘴：本机已有的 0.2 / 0.4 / 0.6 / 0.8\n打印板：低温增粘板 SuperTack\n温度：首层和其他层均为 40℃\n\n请先保存项目并退出 Bambu Studio。修改前自动备份；官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复最初备份：还原各预设首次备份的温度字段（包括继承状态），会覆盖后来设置的温度，其他参数保留。", buttons: ["一键设为 40℃", "恢复上次修改", "恢复最初备份", "退出"])
-if [.alertFirstButtonReturn, .alertSecondButtonReturn, .alertThirdButtonReturn].contains(answer) {
+while true {
+    let answer = alert("PETG 冷打板助手", "一键修改官方 Bambu PETG Basic 预设，所有引用它的颜色共用。\n\n机器：P2S、A1 mini\n喷嘴：本机已有的 0.2 / 0.4 / 0.6 / 0.8\n打印板：低温增粘板 SuperTack\n首层和其他层使用相同温度，默认填入 40℃。\n\n请先保存项目并退出 Bambu Studio。修改前自动备份；官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复默认：还原各预设首次备份的温度字段（包括继承状态），其他参数保留。", buttons: ["应用温度", "恢复默认", "退出"])
+    guard answer == .alertFirstButtonReturn || answer == .alertSecondButtonReturn else { break }
     let running = NSWorkspace.shared.runningApplications.contains {
         isStudio(bundleID: $0.bundleIdentifier, executableName: $0.executableURL?.lastPathComponent)
     }
     if running {
-        _ = alert("请先退出 Bambu Studio", "请保存正在编辑的项目，再使用 ⌘Q 退出 Bambu Studio，然后重新打开本工具。工具不会强制关闭或丢弃你的项目。")
-    } else {
-        do {
-            let applying = answer == .alertFirstButtonReturn
-            let count = try applying ? apply(root: root, backups: backups) : restore(root: root, backups: backups, initial: answer == .alertThirdButtonReturn)
-            _ = alert(count == 0 ? "已经是 40℃" : "\(applying ? "修改" : "恢复")完成", "\(count == 0 ? "无需重复修改。" : "已处理 \(count) 份官方耗材配置。")\n\n重新打开 Bambu Studio，检查低温增粘板的首层和其他层温度，然后重新切片。\n\n备份目录：\(backups.path)")
-        } catch { _ = alert("未完成", error.localizedDescription) }
+        _ = alert("请先退出 Bambu Studio", "请保存正在编辑的项目，再使用 ⌘Q 退出 Bambu Studio，然后重试。工具不会强制关闭或丢弃你的项目。")
+        continue
     }
+    do {
+        let applying = answer == .alertFirstButtonReturn
+        let count = try applying ? apply(root: root, backups: backups, temperature: temperatureValue(temperatureInput.stringValue)) : restore(root: root, backups: backups)
+        _ = alert(count == 0 ? "已经是指定温度" : "\(applying ? "修改" : "恢复")完成", "\(count == 0 ? "无需重复修改。" : "已处理 \(count) 份官方耗材配置。")\n\n重新打开 Bambu Studio，检查低温增粘板的首层和其他层温度，然后重新切片。\n\n备份目录：\(backups.path)")
+        break
+    } catch { _ = alert("未完成", error.localizedDescription) }
 }

@@ -10,8 +10,8 @@ using System.Windows.Forms;
 using System.Reflection;
 
 [assembly: AssemblyTitle("Bambu 冷打板助手")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 static class Program
 {
@@ -75,8 +75,10 @@ static class Program
             throw new Exception(error.Message + "\n" + (failures.Count == 0 ? "本次写入已回滚。" : "部分回滚失败，请检查备份：" + string.Join("、", failures)));
         }
     }
-    static int Apply(string root, string backups)
+    static int Apply(string root, string backups, int temperature = 40)
     {
+        if (temperature < 1 || temperature > 120) throw new Exception("请输入 1–120 之间的整数温度（℃）。");
+        var wanted = new[] { temperature.ToString(System.Globalization.CultureInfo.InvariantCulture) };
         var edits = new Dictionary<string, Dictionary<string, object>>();
         int found = 0;
         foreach (string name in Names) {
@@ -85,8 +87,8 @@ static class Program
             found++;
             var obj = Read(path);
             if (Get(obj, "name") as string != Path.GetFileNameWithoutExtension(name)) throw new Exception("配置名称不匹配：" + name);
-            if (Keys.All(key => Equal(Get(obj, key), new[] { "40" }))) continue;
-            foreach (string key in Keys) obj[key] = new[] { "40" };
+            if (Keys.All(key => Equal(Get(obj, key), wanted))) continue;
+            foreach (string key in Keys) obj[key] = wanted;
             edits.Add(path, obj);
         }
         if (found == 0) throw new Exception("没有找到 P2S 或 A1 mini 的官方 PETG Basic 配置。请先在 Bambu Studio 添加机器并完成配置更新。\n" + root);
@@ -96,20 +98,12 @@ static class Program
         Directory.CreateDirectory(backup);
         foreach (string path in edits.Keys) File.Copy(path, Path.Combine(backup, Path.GetFileName(path)));
         Initial(backups);
-        Atomic(Path.Combine(backups, "latest"), Utf8.GetBytes(stamp));
         Commit(edits);
         return edits.Count;
     }
-    static int Restore(string root, string backups, bool initial)
+    static int Restore(string root, string backups)
     {
-        string pointer = Path.Combine(backups, "latest"), backup;
-        if (initial) backup = Initial(backups);
-        else {
-            if (!File.Exists(pointer)) throw new Exception("还没有可恢复的备份。");
-            string folder = File.ReadAllText(pointer, Utf8);
-            if (!Snapshot(folder) || folder.Contains("/") || folder.Contains("\\")) throw new Exception("备份记录无效。");
-            backup = Path.Combine(backups, folder);
-        }
+        string backup = Initial(backups);
         var edits = new Dictionary<string, Dictionary<string, object>>();
         foreach (string name in Names) {
             string source = Path.Combine(backup, name), path = Path.Combine(root, name);
@@ -118,15 +112,12 @@ static class Program
             if (Get(current, "name") as string != Path.GetFileNameWithoutExtension(name) || !Equal(Get(current, "name"), Get(original, "name")))
                 throw new Exception("配置身份已变化，停止恢复：" + name);
             foreach (string key in Keys) {
-                if (!initial && !Equal(Get(current, key), new[] { "40" }) && !Equal(Get(current, key), Get(original, key)))
-                    throw new Exception(name + " 的温度已被其他操作更改，停止恢复以保留新设置。\n备份：" + backup);
                 if (original.ContainsKey(key)) current[key] = original[key]; else current.Remove(key);
             }
             edits.Add(path, current);
         }
         if (edits.Count == 0) throw new Exception("备份中没有目标配置。");
         Commit(edits);
-        if (!initial) File.Delete(pointer);
         return edits.Count;
     }
     static bool IsStudio(string name) { return string.Equals(name, "bambu-studio", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "BambuStudio", StringComparison.OrdinalIgnoreCase); }
@@ -152,47 +143,52 @@ static class Program
             Require(Equal(Get(Read(a), Keys[0]), new[] { "40" }), "inherited override");
             Require(Apply(root, backups) == 0, "idempotence");
             var changed = Read(p); changed["other"] = "updated"; Write(p, changed);
-            Require(Restore(root, backups, false) == 2, "latest restore");
+            Require(Restore(root, backups) == 2, "default restore");
             Require(Equal(Get(Read(p), Keys[0]), new[] { "60" }) && (string)Get(Read(p), "other") == "updated", "preserve unrelated data");
             Require(!Read(a).ContainsKey(Keys[0]), "restore inheritance");
-            Apply(root, backups);
-            changed = Read(a); changed[Keys[0]] = new[] { "55" }; Write(a, changed);
-            bool rejected = false; try { Restore(root, backups, false); } catch { rejected = true; }
-            Require(rejected && Equal(Get(Read(p), Keys[0]), new[] { "40" }), "restore conflict preflight");
+            Apply(root, backups, 45);
+            Require(Equal(Get(Read(p), Keys[0]), new[] { "45" }) && Equal(Get(Read(p), Keys[1]), new[] { "45" }), "custom temperature");
+            Require(Apply(root, backups, 45) == 0, "custom temperature idempotence");
             Directory.Delete(Path.Combine(backups, "initial"), true);
-            Restore(root, backups, true);
-            Require(Equal(Get(Read(p), Keys[0]), new[] { "60" }), "baseline migration");
-            changed = Read(p); foreach (string key in Keys) changed[key] = new[] { "65" }; Write(p, changed);
-            Apply(root, backups); Restore(root, backups, false);
-            Require(Equal(Get(Read(p), Keys[0]), new[] { "65" }), "latest differs from first");
-            Restore(root, backups, true); Restore(root, backups, true);
-            Require(Equal(Get(Read(p), Keys[0]), new[] { "60" }), "immutable baseline");
+            Restore(root, backups); Restore(root, backups);
+            Require(Equal(Get(Read(p), Keys[0]), new[] { "60" }) && !Read(a).ContainsKey(Keys[0]), "immutable original backup migration");
+            bool rejected;
+            foreach (int invalid in new[] { 0, -1, 121 }) {
+                rejected = false; try { Apply(root, backups, invalid); } catch { rejected = true; }
+                Require(rejected && Equal(Get(Read(p), Keys[0]), new[] { "60" }), "range validation before writing");
+            }
             File.WriteAllText(a, "invalid json");
             rejected = false; try { Apply(root, backups); } catch { rejected = true; }
             Require(rejected && Equal(Get(Read(p), Keys[0]), new[] { "60" }), "invalid JSON causes no partial write");
-            Console.WriteLine("PASS: apply, inheritance, idempotence, latest/initial restore, migration, conflicts, malformed JSON, process identity");
+            Console.WriteLine("PASS: custom temperature, input range, inheritance, idempotence, default restore, migration, malformed JSON, process identity");
         } finally { Directory.Delete(temp, true); }
     }
     static Form CreateForm()
     {
-        var form = new Form { Text = "Bambu 冷打板助手", ClientSize = new Size(620, 550), StartPosition = FormStartPosition.CenterScreen,
-            Font = new Font("Microsoft YaHei UI", 10F), AutoScaleMode = AutoScaleMode.Dpi, MinimumSize = new Size(600, 570), BackColor = Color.White };
+        var form = new Form { Text = "Bambu 冷打板助手", ClientSize = new Size(620, 580), StartPosition = FormStartPosition.CenterScreen,
+            Font = new Font("Microsoft YaHei UI", 10F), AutoScaleMode = AutoScaleMode.Dpi, MinimumSize = new Size(600, 600), BackColor = Color.White };
         form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(26) };
         form.Controls.Add(flow);
         flow.Controls.Add(new PictureBox { Image = form.Icon.ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(64, 64), Margin = new Padding(0, 0, 0, 12) });
-        flow.Controls.Add(new Label { Text = "PETG 冷打板 · 40℃", AutoSize = true, Font = new Font(form.Font.FontFamily, 19F, FontStyle.Bold), Margin = new Padding(0, 0, 0, 14) });
-        flow.Controls.Add(new Label { Text = "P2S / A1 mini · 官方 PETG Basic\n低温增粘板 SuperTack · 首层和其他层均为 40℃\n覆盖本机已有的 0.2 / 0.4 / 0.6 / 0.8 mm 喷嘴预设。\n\n请先保存项目并退出 Bambu Studio。修改前自动备份，\n官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复最初备份会还原最早的温度字段（包括继承状态），\n覆盖后来设置的温度，保留其他参数。", AutoSize = true, MaximumSize = new Size(550, 0), Margin = new Padding(0, 0, 0, 18) });
+        flow.Controls.Add(new Label { Text = "PETG 冷打板助手", AutoSize = true, Font = new Font(form.Font.FontFamily, 19F, FontStyle.Bold), Margin = new Padding(0, 0, 0, 14) });
+        flow.Controls.Add(new Label { Text = "P2S / A1 mini · 官方 PETG Basic\n低温增粘板 SuperTack · 首层和其他层使用相同温度\n覆盖本机已有的 0.2 / 0.4 / 0.6 / 0.8 mm 喷嘴预设。\n\n请先保存项目并退出 Bambu Studio。修改前自动备份，\n官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复默认会还原首次备份的温度字段（包括继承状态），\n覆盖后来设置的温度，保留其他参数。", AutoSize = true, MaximumSize = new Size(550, 0), Margin = new Padding(0, 0, 0, 18) });
+        var temperature = new NumericUpDown { Minimum = 1, Maximum = 120, Value = 40, DecimalPlaces = 0, Width = 90, AccessibleName = "热床温度，摄氏度" };
+        var inputRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 16) };
+        inputRow.Controls.Add(new Label { Text = "热床温度", AutoSize = true, Margin = new Padding(0, 4, 10, 0) });
+        inputRow.Controls.Add(temperature);
+        inputRow.Controls.Add(new Label { Text = "℃（1–120，整数）", AutoSize = true, Margin = new Padding(8, 4, 0, 0) });
+        flow.Controls.Add(inputRow);
         var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 14) };
-        string[] titles = { "一键设为 40℃", "恢复上次修改", "恢复最初备份" };
+        string[] titles = { "应用温度", "恢复默认" };
         for (int i = 0; i < titles.Length; i++) {
             int action = i;
             var button = new Button { Text = titles[i], AutoSize = true, Padding = new Padding(8, 6, 8, 6), Margin = new Padding(0, 0, 10, 0) };
             button.Click += delegate {
                 try {
                     if (StudioRunning()) throw new Exception("请先保存项目并退出 Bambu Studio，然后再试。工具不会强制关闭 Studio。");
-                    int count = action == 0 ? Apply(Root, Backups) : Restore(Root, Backups, action == 2);
-                    MessageBox.Show(form, (count == 0 ? "已经是 40℃，无需重复修改。" : "已处理 " + count + " 份官方耗材配置。") + "\n\n重新打开 Bambu Studio，检查温度并重新切片。\n备份：" + Backups, "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    int count = action == 0 ? Apply(Root, Backups, (int)temperature.Value) : Restore(Root, Backups);
+                    MessageBox.Show(form, (count == 0 ? "已经是指定温度，无需重复修改。" : "已处理 " + count + " 份官方耗材配置。") + "\n\n重新打开 Bambu Studio，检查温度并重新切片。\n备份：" + Backups, "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 } catch (Exception error) { MessageBox.Show(form, error.Message, "未完成", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             };
             buttons.Controls.Add(button);

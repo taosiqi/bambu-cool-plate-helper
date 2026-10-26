@@ -13,7 +13,7 @@ jobs:
         run: ./windows/build.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-v1.2.0
+          name: windows-v1.3.0
           path: |
-            dist/BambuCoolPlateHelper-v1.2.0-windows-x64.zip
+            dist/BambuCoolPlateHelper-v1.3.0-windows-x64.zip
             windows-preview.png

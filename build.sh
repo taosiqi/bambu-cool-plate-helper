@@ -9,4 +9,4 @@ cp Info.plist "$APP/Contents/Info.plist"
 "$APP/Contents/MacOS/BambuCoolPlateHelper" --self-test
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
-ditto -c -k --sequesterRsrc --keepParent "$APP" dist/BambuCoolPlateHelper-v1.2.0-arm64.zip
+ditto -c -k --sequesterRsrc --keepParent "$APP" dist/BambuCoolPlateHelper-v1.3.0-arm64.zip
