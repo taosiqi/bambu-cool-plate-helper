@@ -15,3 +15,7 @@ Bambu 冷打板助手
 
 这是本机编译的 Apple Silicon 应用，不需要 Python 或额外依赖，未经过 Apple 公证。
 源码：main.swift；验证：应用内部可执行文件加 --self-test，在临时目录运行，不修改真实配置。
+
+新增：恢复最初备份。按每份预设最早可用备份恢复两个温度字段，原来继承的恢复继承；不会覆盖其他参数。会覆盖后来修改的温度字段。兼容旧版历史备份，初始备份不会被后续应用替换。
+
+支持作者，求助力：https://makerworld.com.cn/@siqijson?appSharePlatform=copy

@@ -20,6 +20,32 @@ func write(_ obj: [String: Any], _ url: URL) throws {
     let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     try (data + Data([10])).write(to: url, options: .atomic)
 }
+// Keep the earliest available original for each preset, including backups from v1.0.1.
+func initialBackup(_ backups: URL) throws -> URL {
+    let initial = backups.appendingPathComponent("initial")
+    try fm.createDirectory(at: initial, withIntermediateDirectories: true)
+    let snapshots = try fm.contentsOfDirectory(at: backups, includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey])
+        .filter { url in
+            let parts = url.lastPathComponent.split(separator: "-", maxSplits: 1)
+            return parts.count == 2 && Int(parts[0]) != nil && UUID(uuidString: String(parts[1])) != nil
+        }
+        .sorted {
+            let left = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            let right = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            return left == right ? $0.lastPathComponent < $1.lastPathComponent : left < right
+        }
+    for snapshot in snapshots {
+        for name in names {
+            let source = snapshot.appendingPathComponent(name)
+            let target = initial.appendingPathComponent(name)
+            if fm.fileExists(atPath: source.path) && !fm.fileExists(atPath: target.path) {
+                _ = try read(source)
+                try fm.copyItem(at: source, to: target)
+            }
+        }
+    }
+    return initial
+}
 func apply(root: URL, backups: URL) throws -> Int {
     // Validate every target before writing any file.
     var edits: [(URL, [String: Any])] = []
@@ -41,6 +67,7 @@ func apply(root: URL, backups: URL) throws -> Int {
     let backup = backups.appendingPathComponent("\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString)")
     try fm.createDirectory(at: backup, withIntermediateDirectories: true)
     for (url, _) in edits { try fm.copyItem(at: url, to: backup.appendingPathComponent(url.lastPathComponent)) }
+    _ = try initialBackup(backups)
     // Persist recovery pointer before changing files, including if an individual write fails.
     try fm.createDirectory(at: backups, withIntermediateDirectories: true)
     try Data(backup.lastPathComponent.utf8).write(to: backups.appendingPathComponent("latest"), options: .atomic)
@@ -56,12 +83,17 @@ func apply(root: URL, backups: URL) throws -> Int {
     }
     return edits.count
 }
-func restore(root: URL, backups: URL) throws -> Int {
+func restore(root: URL, backups: URL, initial: Bool = false) throws -> Int {
     let pointer = backups.appendingPathComponent("latest")
-    guard fm.fileExists(atPath: pointer.path) else { throw Failure(message: "还没有可恢复的备份。") }
-    let folder = try String(contentsOf: pointer, encoding: .utf8)
-    guard !folder.contains("/"), !folder.contains(".."), !folder.isEmpty else { throw Failure(message: "备份记录无效。") }
-    let backup = backups.appendingPathComponent(folder)
+    let backup: URL
+    if initial {
+        backup = try initialBackup(backups)
+    } else {
+        guard fm.fileExists(atPath: pointer.path) else { throw Failure(message: "还没有可恢复的备份。") }
+        let folder = try String(contentsOf: pointer, encoding: .utf8)
+        guard !folder.contains("/"), !folder.contains(".."), !folder.isEmpty else { throw Failure(message: "备份记录无效。") }
+        backup = backups.appendingPathComponent(folder)
+    }
     var edits: [(URL, [String: Any], Data)] = []
     for name in names where fm.fileExists(atPath: backup.appendingPathComponent(name).path) {
         let original = try read(backup.appendingPathComponent(name))
@@ -72,7 +104,7 @@ func restore(root: URL, backups: URL) throws -> Int {
             // Do not overwrite a later temperature edit or a vendor update.
             let now = current[key] as? [String]
             let old = original[key] as? [String]
-            guard now == wanted || now == old else {
+            guard initial || now == wanted || now == old else {
                 throw Failure(message: "\(name) 的温度已被其他操作更改，停止恢复以保留新设置。备份位于：\(backup.path)")
             }
             current[key] = original[key]
@@ -89,7 +121,7 @@ func restore(root: URL, backups: URL) throws -> Int {
         }
         throw Failure(message: "恢复失败：\(error.localizedDescription)\n\(failed ? "部分回滚失败，请检查备份。" : "本次恢复已回滚。")")
     }
-    try fm.removeItem(at: pointer)
+    if !initial { try fm.removeItem(at: pointer) }
     return edits.count
 }
 
@@ -132,7 +164,25 @@ func selfTest() throws {
     catch { }
     let unchangedP = try read(p)
     assert(unchangedP[keys[0]] as? [String] == wanted)
-    print("PASS: explicit/inherited values, idempotence, restore, unrelated edits, conflicting restore")
+    // Rebuild the baseline from old snapshots, then ensure later snapshots never replace it.
+    try fm.removeItem(at: backup.appendingPathComponent("initial"))
+    _ = try restore(root: root, backups: backup, initial: true)
+    let firstP = try read(p), firstA = try read(a)
+    assert(firstP[keys[0]] as? [String] == ["60"] && firstP["other"] as? String == "updated")
+    assert(firstA[keys[0]] == nil)
+    var updated = firstP
+    updated[keys[0]] = ["65"]
+    updated[keys[1]] = ["65"]
+    try write(updated, p)
+    _ = try apply(root: root, backups: backup)
+    _ = try restore(root: root, backups: backup)
+    let lastP = try read(p)
+    assert(lastP[keys[0]] as? [String] == ["65"])
+    _ = try restore(root: root, backups: backup, initial: true)
+    _ = try restore(root: root, backups: backup, initial: true)
+    let earliestP = try read(p)
+    assert(earliestP[keys[0]] as? [String] == ["60"])
+    print("PASS: initial backup migration, immutable baseline, latest versus initial, repeat restore; explicit/inherited values, idempotence, restore, unrelated edits, conflicting restore")
 }
 
 if CommandLine.arguments.contains("--self-test") {
@@ -151,10 +201,20 @@ func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> N
     a.messageText = title
     a.informativeText = message
     for button in buttons { a.addButton(withTitle: button) }
+    if title == "PETG 冷打板 · 40℃" {
+        let link = NSTextField(labelWithAttributedString: NSAttributedString(
+            string: "支持作者 · 去 MakerWorld 主页帮忙助力 ↗",
+            attributes: [.link: URL(string: "https://makerworld.com.cn/@siqijson?appSharePlatform=copy")!,
+                         .font: NSFont.systemFont(ofSize: 13)]))
+        link.isSelectable = true
+        link.allowsEditingTextAttributes = true
+        link.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
+        a.accessoryView = link
+    }
     return a.runModal()
 }
-let answer = alert("PETG 冷打板 · 40℃", "一键修改官方 Bambu PETG Basic 预设，所有引用它的颜色共用。\n\n机器：P2S、A1 mini\n喷嘴：本机已有的 0.2 / 0.4 / 0.6 / 0.8\n打印板：低温增粘板 SuperTack\n温度：首层和其他层均为 40℃\n\n请先保存项目并退出 Bambu Studio。修改前自动备份；官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。", buttons: ["一键设为 40℃", "恢复上次修改", "退出"])
-if answer == .alertFirstButtonReturn || answer == .alertSecondButtonReturn {
+let answer = alert("PETG 冷打板 · 40℃", "一键修改官方 Bambu PETG Basic 预设，所有引用它的颜色共用。\n\n机器：P2S、A1 mini\n喷嘴：本机已有的 0.2 / 0.4 / 0.6 / 0.8\n打印板：低温增粘板 SuperTack\n温度：首层和其他层均为 40℃\n\n请先保存项目并退出 Bambu Studio。修改前自动备份；官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复最初备份：还原各预设首次备份的温度字段（包括继承状态），会覆盖后来设置的温度，其他参数保留。", buttons: ["一键设为 40℃", "恢复上次修改", "恢复最初备份", "退出"])
+if [.alertFirstButtonReturn, .alertSecondButtonReturn, .alertThirdButtonReturn].contains(answer) {
     let running = NSWorkspace.shared.runningApplications.contains {
         isStudio(bundleID: $0.bundleIdentifier, executableName: $0.executableURL?.lastPathComponent)
     }
@@ -163,7 +223,7 @@ if answer == .alertFirstButtonReturn || answer == .alertSecondButtonReturn {
     } else {
         do {
             let applying = answer == .alertFirstButtonReturn
-            let count = try applying ? apply(root: root, backups: backups) : restore(root: root, backups: backups)
+            let count = try applying ? apply(root: root, backups: backups) : restore(root: root, backups: backups, initial: answer == .alertThirdButtonReturn)
             _ = alert(count == 0 ? "已经是 40℃" : "\(applying ? "修改" : "恢复")完成", "\(count == 0 ? "无需重复修改。" : "已处理 \(count) 份官方耗材配置。")\n\n重新打开 Bambu Studio，检查低温增粘板的首层和其他层温度，然后重新切片。\n\n备份目录：\(backups.path)")
         } catch { _ = alert("未完成", error.localizedDescription) }
     }
