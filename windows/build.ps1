@@ -1,3 +1,4 @@
+param([switch]$TestOnly)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -7,6 +8,11 @@ $common = @('/nologo', '/utf8output', '/codepage:65001', '/platform:x64', '/refe
 if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed' }
 & ./dist/HelperTests.exe --self-test
 if ($LASTEXITCODE -ne 0) { throw 'Self-test failed' }
+if ($TestOnly) {
+    & ./dist/HelperTests.exe --render-preview
+    if ($LASTEXITCODE -ne 0) { throw 'UI preview failed' }
+    exit 0
+}
 & $csc @common /target:winexe /out:dist\windows\BambuCoolPlateHelper.exe .\windows\Program.cs
 if ($LASTEXITCODE -ne 0) { throw 'App compilation failed' }
 $p = Start-Process -FilePath './dist/windows/BambuCoolPlateHelper.exe' -ArgumentList '--render-preview' -PassThru -Wait

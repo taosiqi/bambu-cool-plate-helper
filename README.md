@@ -6,6 +6,10 @@ macOS / Windows 小工具，一键修改本机官方 Bambu PETG Basic 在低温�
 
 **温度默认 40℃，可以自己输入；只保留「应用温度」和「恢复默认」两个操作。**
 
+## 当前开发状态
+
+以下功能已在源码中实现，按作者要求暂不打包或发布。现有 Release 仍为旧版本。
+
 ## 下载与使用
 
 从 [Releases](https://github.com/taosiqi/bambu-cool-plate-helper/releases/latest) 下载对应 ZIP，解压后双击应用。
@@ -25,8 +29,7 @@ Windows 版不需要安装 Python 或独立 .NET SDK。两端都有 GitHub 仓�
 
 ## 修改范围
 
-- 机器：P2S、A1 mini。
-- 喷嘴：本机已有的 0.2、0.4、0.6、0.8 mm 官方 PETG Basic 预设。
+- 机器与喷嘴：动态扫描本机官方目录中所有 `Bambu PETG Basic @*.json`，包含全部机型、喷嘴和公共基础预设，不写死机型列表。
 - Mac：`~/Library/Application Support/BambuStudio/system/BBL/filament/`。
 - Windows：`%APPDATA%\BambuStudio\system\BBL\filament\`。
 - 字段：`supertack_plate_temp`、`supertack_plate_temp_initial_layer`。
@@ -60,7 +63,7 @@ Windows 使用 PowerShell 和系统 .NET Framework 4.x 编译器：
 ./windows/build.ps1
 ```
 
-产物位于 `dist/`。GitHub Actions 的 **Build Windows** 工作流会编译 EXE、执行临时目录自测、输出窗口预览和 ZIP。自测不会修改真实 Studio 配置，覆盖自定义温度、输入范围、重复应用、首次备份迁移、默认恢复、继承、无关字段保留、异常 JSON 和 Studio 进程识别。
+产物位于 `dist/`。GitHub Actions 的 **Verify Windows** 工作流仅编译测试程序、执行临时目录自测并输出窗口预览，不生成下载包。Windows 本机可用 `./windows/build.ps1 -TestOnly` 运行同样的验证。自测不会修改真实 Studio 配置，覆盖全部机型及未来预设发现、排除 PETG HF、自定义温度、输入范围、重复应用、首次备份迁移、默认恢复、继承、无关字段保留、异常 JSON 和 Studio 进程识别。
 
 图标源码为 `assets/generate-icon.swift`。在 Mac 上重新生成：
 
@@ -75,6 +78,6 @@ iconutil -c icns assets/AppIcon.iconset -o assets/AppIcon.icns
 
 [GitHub 仓库与更新](https://github.com/taosiqi/bambu-cool-plate-helper)
 
-## v1.3.0
+## 开发中（待打包）
 
-温度支持输入，默认 40℃；移除「恢复上次修改」，统一为「恢复默认」（首次备份）。Mac 和 Windows 同步更新，保留图标、GitHub 和 MakerWorld 入口。
+温度支持输入，默认 40℃；移除「恢复上次修改」，统一为「恢复默认」（首次备份）。Mac 和 Windows 同步更新，支持全部机型的官方 PETG Basic 预设，保留图标。GitHub 和 MakerWorld 入口使用可点击控件、下划线和手型光标。

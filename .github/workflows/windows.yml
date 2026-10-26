@@ -1,4 +1,4 @@
-name: Build Windows
+name: Verify Windows
 on:
   workflow_dispatch:
 permissions:
@@ -8,12 +8,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build and test Windows application
+      - name: Compile tests and render preview (no package)
         shell: pwsh
-        run: ./windows/build.ps1
+        run: ./windows/build.ps1 -TestOnly
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-v1.3.0
-          path: |
-            dist/BambuCoolPlateHelper-v1.3.0-windows-x64.zip
-            windows-preview.png
+          name: windows-preview
+          path: windows-preview.png

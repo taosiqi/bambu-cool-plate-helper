@@ -2,8 +2,12 @@ import AppKit
 
 let fm = FileManager.default
 let keys = ["supertack_plate_temp", "supertack_plate_temp_initial_layer"]
-let names = ["P2S", "A1M"].flatMap { model in
-    ["0.2", "0.4", "0.6", "0.8"].map { "Bambu PETG Basic @BBL \(model) \($0) nozzle.json" }
+func presetNames(in directory: URL) throws -> [String] {
+    guard fm.fileExists(atPath: directory.path) else { return [] }
+    return try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey])
+        .filter { $0.lastPathComponent.hasPrefix("Bambu PETG Basic @") && $0.pathExtension == "json"
+            && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+        .map { $0.lastPathComponent }.sorted()
 }
 struct Failure: LocalizedError {
     let message: String
@@ -34,7 +38,7 @@ func initialBackup(_ backups: URL) throws -> URL {
             return left == right ? $0.lastPathComponent < $1.lastPathComponent : left < right
         }
     for snapshot in snapshots {
-        for name in names {
+        for name in try presetNames(in: snapshot) {
             let source = snapshot.appendingPathComponent(name)
             let target = initial.appendingPathComponent(name)
             if fm.fileExists(atPath: source.path) && !fm.fileExists(atPath: target.path) {
@@ -53,6 +57,7 @@ func temperatureValue(_ text: String) throws -> Int {
 }
 func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
     let wanted = [String(try temperatureValue(String(temperature)))]
+    let names = try presetNames(in: root)
     // Validate every target before writing any file.
     var edits: [(URL, [String: Any])] = []
     for name in names {
@@ -67,7 +72,7 @@ func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
         edits.append((url, obj))
     }
     guard names.contains(where: { fm.fileExists(atPath: root.appendingPathComponent($0).path) }) else {
-        throw Failure(message: "没有找到 P2S 或 A1 mini 的官方 PETG Basic 配置。请先在 Bambu Studio 添加机器并完成配置更新。")
+        throw Failure(message: "没有找到官方 PETG Basic 配置。请先在 Bambu Studio 完成官方配置更新。")
     }
     if edits.isEmpty { return 0 }
     let backup = backups.appendingPathComponent("\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString)")
@@ -89,11 +94,11 @@ func apply(root: URL, backups: URL, temperature: Int = 40) throws -> Int {
 func restore(root: URL, backups: URL) throws -> Int {
     let backup = try initialBackup(backups)
     var edits: [(URL, [String: Any], Data)] = []
-    for name in names where fm.fileExists(atPath: backup.appendingPathComponent(name).path) {
+    for name in try presetNames(in: backup) {
         let original = try read(backup.appendingPathComponent(name))
         let url = root.appendingPathComponent(name)
         var current = try read(url)
-        guard current["name"] as? String == original["name"] as? String else { throw Failure(message: "配置身份已变化，停止恢复：\(name)") }
+        guard current["name"] as? String == String(name.dropLast(5)), current["name"] as? String == original["name"] as? String else { throw Failure(message: "配置身份已变化，停止恢复：\(name)") }
         for key in keys {
             current[key] = original[key]
         }
@@ -125,10 +130,11 @@ func selfTest() throws {
     let root = temp.appendingPathComponent("filament")
     let backup = temp.appendingPathComponent("backup")
     try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    let names = ["Bambu PETG Basic @BBL P2S 0.4 nozzle.json", "Bambu PETG Basic @BBL A1M 0.4 nozzle.json"]
     let p = root.appendingPathComponent(names[0])
-    let a = root.appendingPathComponent(names[4])
+    let a = root.appendingPathComponent(names[1])
     try write(["name": String(names[0].dropLast(5)), keys[0]: ["60"], keys[1]: ["60"], "other": "keep"], p)
-    try write(["name": String(names[4].dropLast(5)), "inherits": "base"], a)
+    try write(["name": String(names[1].dropLast(5)), "inherits": "base"], a)
     let changed = try apply(root: root, backups: backup)
     assert(changed == 2)
     let aAfter = try read(a)
@@ -163,16 +169,58 @@ func selfTest() throws {
     do { _ = try apply(root: root, backups: backup, temperature: 121); assertionFailure("Range check missing") } catch { }
     let untouched = try read(p)
     assert(untouched[keys[0]] as? [String] == ["60"])
+    let extraNames = ["Bambu PETG Basic @BBL X1C.json", "Bambu PETG Basic @BBL H2D 0.6 nozzle.json", "Bambu PETG Basic @base.json", "Bambu PETG Basic @BBL Future 1.0 nozzle.json"]
+    for name in extraNames {
+        try write(["name": String(name.dropLast(5)), keys[0]: ["70"], keys[1]: ["70"]], root.appendingPathComponent(name))
+    }
+    let unrelated = root.appendingPathComponent("Bambu PETG HF @BBL P2S.json")
+    try write(["name": "Bambu PETG HF @BBL P2S", keys[0]: ["80"]], unrelated)
+    let allModels = try apply(root: root, backups: backup, temperature: 50)
+    assert(allModels == 6)
+    let untouchedHF = try read(unrelated)
+    assert(untouchedHF[keys[0]] as? [String] == ["80"])
+    for name in extraNames {
+        let obj = try read(root.appendingPathComponent(name))
+        assert(obj[keys[0]] as? [String] == ["50"])
+    }
+    _ = try restore(root: root, backups: backup)
+    for name in extraNames {
+        let obj = try read(root.appendingPathComponent(name))
+        assert(obj[keys[0]] as? [String] == ["70"])
+    }
     try Data("invalid JSON".utf8).write(to: a)
     do { _ = try apply(root: root, backups: backup); assertionFailure("Malformed JSON accepted") } catch { }
     let afterInvalidJSON = try read(p)
     assert(afterInvalidJSON[keys[0]] as? [String] == ["60"])
-    print("PASS: custom temperature, range/input validation, idempotence, original backup migration, default restore, inheritance, unrelated edits, malformed JSON, process identity")
+    print("PASS: all models, new/future presets, base preset, exclude PETG HF, custom temperature, range/input validation, idempotence, original backup migration, default restore, inheritance, unrelated edits, malformed JSON, process identity")
 }
 
 if CommandLine.arguments.contains("--self-test") {
     do { try selfTest() } catch { fputs("\(error)\n", stderr); exit(1) }
     exit(0)
+}
+
+final class LinkButton: NSButton {
+    let destination: URL
+    init(title: String, url: String) {
+        destination = URL(string: url)!
+        super.init(frame: .zero)
+        isBordered = false
+        alignment = .left
+        attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: NSColor.linkColor, .font: NSFont.systemFont(ofSize: 13),
+            .underlineStyle: NSUnderlineStyle.single.rawValue])
+        target = self
+        action = #selector(openDestination)
+        toolTip = destination.absoluteString
+        setAccessibilityLabel(title)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used") }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+    @objc private func openDestination() { NSWorkspace.shared.open(destination) }
 }
 
 let app = NSApplication.shared
@@ -202,10 +250,7 @@ func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> N
             ("支持作者 · 去 MakerWorld 主页帮忙助力 ↗", "https://makerworld.com.cn/@siqijson?appSharePlatform=copy"),
             ("GitHub · 源码与新版下载 ↗", "https://github.com/taosiqi/bambu-cool-plate-helper")
         ] {
-            let link = NSTextField(labelWithAttributedString: NSAttributedString(
-                string: title, attributes: [.link: URL(string: address)!, .font: NSFont.systemFont(ofSize: 13)]))
-            link.isSelectable = true
-            link.allowsEditingTextAttributes = true
+            let link = LinkButton(title: title, url: address)
             links.addArrangedSubview(link)
         }
         links.frame = NSRect(x: 0, y: 0, width: 400, height: 98)
@@ -214,7 +259,7 @@ func alert(_ title: String, _ message: String, buttons: [String] = ["好"]) -> N
     return a.runModal()
 }
 while true {
-    let answer = alert("PETG 冷打板助手", "一键修改官方 Bambu PETG Basic 预设，所有引用它的颜色共用。\n\n机器：P2S、A1 mini\n喷嘴：本机已有的 0.2 / 0.4 / 0.6 / 0.8\n打印板：低温增粘板 SuperTack\n首层和其他层使用相同温度，默认填入 40℃。\n\n请先保存项目并退出 Bambu Studio。修改前自动备份；官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复默认：还原各预设首次备份的温度字段（包括继承状态），其他参数保留。", buttons: ["应用温度", "恢复默认", "退出"])
+    let answer = alert("PETG 冷打板助手", "一键修改官方 Bambu PETG Basic 预设，所有引用它的颜色共用。\n\n机器与喷嘴：本机官方 PETG Basic 的全部预设\n打印板：低温增粘板 SuperTack\n首层和其他层使用相同温度，默认填入 40℃。\n\n请先保存项目并退出 Bambu Studio。修改前自动备份；官方配置更新后可再次应用。已有项目的独立覆盖需另行检查。\n\n恢复默认：还原各预设首次备份的温度字段（包括继承状态），其他参数保留。", buttons: ["应用温度", "恢复默认", "退出"])
     guard answer == .alertFirstButtonReturn || answer == .alertSecondButtonReturn else { break }
     let running = NSWorkspace.shared.runningApplications.contains {
         isStudio(bundleID: $0.bundleIdentifier, executableName: $0.executableURL?.lastPathComponent)
