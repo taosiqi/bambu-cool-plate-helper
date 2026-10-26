@@ -19,3 +19,7 @@ Bambu 冷打板助手
 新增：恢复最初备份。按每份预设最早可用备份恢复两个温度字段，原来继承的恢复继承；不会覆盖其他参数。会覆盖后来修改的温度字段。兼容旧版历史备份，初始备份不会被后续应用替换。
 
 支持作者，求助力：https://makerworld.com.cn/@siqijson?appSharePlatform=copy
+
+Windows 版：下载 windows-x64.zip，解压运行 EXE；配置路径为 %APPDATA%\BambuStudio\system\BBL\filament，备份在 %APPDATA%\BambuCoolPlateHelper\Backups。
+
+GitHub 源码与更新：https://github.com/taosiqi/bambu-cool-plate-helper

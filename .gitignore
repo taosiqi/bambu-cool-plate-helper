@@ -2,3 +2,5 @@
 *.app/
 *.zip
 dist/
+assets/AppIcon.iconset/
+windows-preview.png
