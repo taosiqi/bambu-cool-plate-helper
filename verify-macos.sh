@@ -10,6 +10,6 @@ fi
 mkdir -p dist/tests
 binary="dist/tests/BambuCoolPlateHelper-$arch"
 swiftc main.swift -target "$arch-apple-macos13.0" -framework AppKit -o "$binary"
-lipo -verify_arch "$arch" "$binary"
+lipo "$binary" -verify_arch "$arch"
 file "$binary"
 "$binary" --self-test
